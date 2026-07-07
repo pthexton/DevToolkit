@@ -9,6 +9,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "DevToolkitApp"
+        ),
+        .testTarget(
+            name: "DevToolkitAppTests",
+            dependencies: ["DevToolkitApp"]
         )
     ]
 )

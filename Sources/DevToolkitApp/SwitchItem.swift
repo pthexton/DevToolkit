@@ -24,17 +24,25 @@ struct SwitchItem: Identifiable {
 
 extension SwitchItem {
     /// Combined fuzzy score against `query`, weighting the title higher than
-    /// the subtitle (app name / URL). Returns nil if `query` doesn't match
-    /// either field as a subsequence.
+    /// the subtitle (app name / URL). Tries an ordered subsequence match
+    /// first; if `query` doesn't appear as a subsequence in either field at
+    /// all (e.g. transposed or mistyped characters, not just missing ones),
+    /// falls back to a typo-tolerant token comparison so a close-but-garbled
+    /// query still surfaces instead of vanishing entirely. Returns nil only
+    /// if neither approach finds anything.
     func matchScore(for query: String) -> Int? {
         guard !query.isEmpty else { return 0 }
         let titleMatch = FuzzyMatcher.match(pattern: query, in: title)
         let subtitleMatch = subtitle.isEmpty ? nil : FuzzyMatcher.match(pattern: query, in: subtitle)
         switch (titleMatch, subtitleMatch) {
-        case let (t?, s?): return t.score * 2 + s.score
-        case let (t?, nil): return t.score * 2
-        case let (nil, s?): return s.score
-        case (nil, nil): return nil
+        case let (t?, s?): return t * 2 + s
+        case let (t?, nil): return t * 2
+        case let (nil, s?): return s
+        case (nil, nil):
+            let titleTypo = FuzzyMatcher.typoScore(pattern: query, in: title) ?? 0
+            let subtitleTypo = subtitle.isEmpty ? 0 : (FuzzyMatcher.typoScore(pattern: query, in: subtitle) ?? 0)
+            let best = max(titleTypo, subtitleTypo)
+            return best > 0 ? best : nil
         }
     }
 }

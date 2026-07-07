@@ -125,6 +125,9 @@ final class OverlayController {
             case 53: // escape
                 self.hide()
                 return nil
+            case 32 where event.modifierFlags.contains(.control): // ctrl+u
+                self.viewModel.query = ""
+                return nil
             case 29 where event.modifierFlags.contains(.command): // cmd+0
                 self.viewModel.setMode(.all)
                 return nil
