@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+build/
+CLAUDE.tmp/
+.DS_Store
