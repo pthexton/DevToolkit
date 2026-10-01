@@ -27,6 +27,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     var results: [SwitchItem] {
+        if QuickCommand.isCommand(query) {
+            return QuickCommand.item(for: query).map { [$0] } ?? []
+        }
         let candidates = modeFilteredItems
         guard !query.isEmpty else {
             return Array(candidates.prefix(maxResults))

@@ -92,6 +92,7 @@ private struct ResultRow: View {
         case .app: return "app"
         case .browserTab: return "safari"
         case .terminalTab: return "terminal"
+        case .command: return "arrow.up.right.square"
         }
     }
 

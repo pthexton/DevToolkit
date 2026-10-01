@@ -4,6 +4,8 @@ enum SwitchItemKind {
     case app
     case browserTab
     case terminalTab
+    /// Synthetic result for a typed prefix command (see `QuickCommand`).
+    case command
 }
 
 /// One searchable result in the overlay: either a plain running app (the
