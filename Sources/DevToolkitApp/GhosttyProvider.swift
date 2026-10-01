@@ -20,13 +20,20 @@ final class GhosttyProvider: WindowProvider {
     func fetchItems() -> [SwitchItem] {
         guard isAvailable() else { return [] }
 
+        // We emit the *tab* name (`name of t`) alongside the surface name.
+        // Ghostty's tab title defaults to the active surface's title but
+        // becomes a user-chosen string once the tab is renamed (e.g.
+        // "claude-aidr"). That custom name lives only on the tab, never on the
+        // terminal surface (`name of s`, which stays the process/cwd title),
+        // so reading only the surface name made renamed tabs unsearchable.
         let script = """
         tell application "Ghostty"
             set output to ""
             repeat with w in windows
                 repeat with t in tabs of w
+                    set tabName to (name of t)
                     repeat with s in terminals of t
-                        set output to output & (id of s) & "\t" & (name of s) & "\t" & (working directory of s) & "\n"
+                        set output to output & (id of s) & "\t" & tabName & "\t" & (name of s) & "\t" & (working directory of s) & "\n"
                     end repeat
                 end repeat
             end repeat
@@ -40,15 +47,19 @@ final class GhosttyProvider: WindowProvider {
 
         var items: [SwitchItem] = []
         for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-            guard fields.count == 3 else { continue }
+            let fields = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
+            guard fields.count == 4 else { continue }
             let surfaceID = String(fields[0])
-            let name = String(fields[1])
-            let cwd = String(fields[2])
+            let tabName = String(fields[1])
+            let surfaceName = String(fields[2])
+            let cwd = String(fields[3])
+            // Prefer the tab's title (which carries the user's custom name),
+            // then the surface title, then the working directory.
+            let title = !tabName.isEmpty ? tabName : (!surfaceName.isEmpty ? surfaceName : cwd)
             items.append(
                 SwitchItem(
                     id: "ghostty:\(surfaceID)",
-                    title: name.isEmpty ? cwd : name,
+                    title: title,
                     subtitle: cwd,
                     icon: icon,
                     kind: .terminalTab,
