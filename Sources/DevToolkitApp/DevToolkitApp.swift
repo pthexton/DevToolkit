@@ -14,6 +14,7 @@ struct DevToolkitApp: App {
         MenuBarExtra("DevToolkit", systemImage: "arrow.left.arrow.right.square") {
             Button("Show DevToolkit") { delegate.overlay.toggle() }
                 .keyboardShortcut("k")
+            SteelSeriesClockToggle(clock: delegate.clock)
             Divider()
             Button("Quit DevToolkit") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
@@ -21,9 +22,18 @@ struct DevToolkitApp: App {
     }
 }
 
+private struct SteelSeriesClockToggle: View {
+    @ObservedObject var clock: SteelSeriesClockFeature
+
+    var body: some View {
+        Toggle("SteelSeries Clock", isOn: $clock.isEnabled)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let overlay = OverlayController()
+    let clock = SteelSeriesClockFeature()
     private var hotKey: HotKeyManager?
     private var ghosttyQuickTerminalHotKey: HotKeyManager?
 
@@ -51,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ghosttyQuickTerminalHotKey == nil {
             log.error("Failed to register global hotkey (Cmd+0, Ghostty quick terminal)")
         }
+
+        clock.startIfEnabled()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        clock.shutdown()
     }
 
     /// Self-registers as a login-item LaunchAgent via `SMAppService` so
