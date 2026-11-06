@@ -20,9 +20,27 @@ enum ClockFrame {
         ":": ["00000", "00100", "00100", "00000", "00100", "00100", "00000"]
     ]
 
-    static func pixels(_ text: String, x originX: Int = 6, y originY: Int = 18) -> [Bool] {
+    /// Each glyph pixel is drawn as a `scale` x `scale` block.
+    static let scale = 3
+    /// "HH:MM": five 5-column glyphs with a 1-column gap between them.
+    static let clockWidth = (5 * 5 + 4) * scale
+    static let clockHeight = 7 * scale
+    /// Number of distinct top-left positions the clock can take on the panel.
+    static let travelX = width - clockWidth + 1
+    static let travelY = height - clockHeight + 1
+
+    /// Burn-in protection: a different clock position every minute. The steps
+    /// are coprime with the travel ranges, so the walk visits every position
+    /// before repeating, and consecutive minutes never land near each other
+    /// (no digit stays lit in the same place from one minute to the next).
+    static func clockOrigin(minuteIndex: Int) -> (x: Int, y: Int) {
+        let x = ((minuteIndex * 17) % travelX + travelX) % travelX
+        let y = ((minuteIndex * 23) % travelY + travelY) % travelY
+        return (x, y)
+    }
+
+    static func pixels(_ text: String, x originX: Int = 20, y originY: Int = 21) -> [Bool] {
         var pixels = [Bool](repeating: false, count: width * height)
-        let scale = 4
         for (index, character) in text.enumerated() {
             guard let glyph = glyphs[character] else { continue }
             for (row, line) in glyph.enumerated() {
@@ -69,8 +87,8 @@ enum ClockFrame {
         let refreshAfter: TimeInterval
     }
 
-    /// Daytime shows the clock, shifting position every 5 minutes to avoid OLED
-    /// burn-in. From 21:00 to 07:00 the screen is black apart from a brief
+    /// Daytime shows the clock, moving to a new position every minute to avoid
+    /// OLED burn-in. From 21:00 to 07:00 the screen is black apart from a brief
     /// sleeping-kitty cameo at the start of each 5 minute slot.
     static func scene(at date: Date, calendar: Calendar = .current) -> Scene {
         let parts = calendar.dateComponents([.hour, .minute, .second, .nanosecond], from: date)
@@ -95,11 +113,10 @@ enum ClockFrame {
             return Scene(pixels: frame, description: "Night: screen black", refreshAfter: max(0.05, min(30, 300 - phase)))
         }
         let text = String(format: "%02d:%02d", hour, minute)
-        // Use the full available travel without clipping the 116x28 clock.
-        let x = ((slot * 5) % 13 + 13) % 13
-        let y = ((slot * 11) % 37 + 37) % 37
-        // Wake on minute boundaries too, so 21:00 and five-minute shifts are prompt.
-        return Scene(pixels: pixels(text, x: x, y: y), description: text,
+        // Minute boundaries are multiples of 60s since the epoch (all real time
+        // zone offsets are whole minutes), so position and time change together.
+        let origin = clockOrigin(minuteIndex: Int((date.timeIntervalSince1970 / 60).rounded(.down)))
+        return Scene(pixels: pixels(text, x: origin.x, y: origin.y), description: text,
                      refreshAfter: max(0.05, min(30, 60 - second)))
     }
 

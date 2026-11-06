@@ -36,6 +36,44 @@ final class ClockFrameTests: XCTestCase {
         XCTAssertFalse(black.pixels.contains(true))
     }
 
+    private func boundingBox(_ pixels: [Bool]) -> (minX: Int, maxX: Int, minY: Int, maxY: Int) {
+        var box = (minX: 128, maxX: 0, minY: 64, maxY: 0)
+        for y in 0..<ClockFrame.height {
+            for x in 0..<ClockFrame.width where pixels[y * ClockFrame.width + x] {
+                box = (min(box.minX, x), max(box.maxX, x), min(box.minY, y), max(box.maxY, y))
+            }
+        }
+        return box
+    }
+
+    func testClockMovesEveryMinuteByAVisibleDistanceAndStaysOnScreen() {
+        var previous: (x: Int, y: Int)?
+        for minute in 0..<2000 {
+            let origin = ClockFrame.clockOrigin(minuteIndex: minute)
+            XCTAssertTrue((0..<ClockFrame.travelX).contains(origin.x))
+            XCTAssertTrue((0..<ClockFrame.travelY).contains(origin.y))
+            if let previous {
+                let dx = abs(origin.x - previous.x), dy = abs(origin.y - previous.y)
+                XCTAssertTrue(dx >= 16 || dy >= 20, "minute \(minute) moved only \(dx),\(dy)")
+            }
+            previous = origin
+        }
+    }
+
+    func testRenderedClockIsNotClippedAndDiffersBetweenConsecutiveMinutes() {
+        for minute in 0..<60 {
+            let scene = ClockFrame.scene(at: date(hour: 12, minute: minute % 60, second: 1), calendar: calendar)
+            let box = boundingBox(scene.pixels)
+            XCTAssertLessThanOrEqual(box.maxX, ClockFrame.width - 1)
+            XCTAssertLessThanOrEqual(box.maxY, ClockFrame.height - 1)
+            XCTAssertEqual(box.maxX - box.minX + 1 <= ClockFrame.clockWidth, true)
+        }
+        let a = boundingBox(ClockFrame.scene(at: date(hour: 12, minute: 8, second: 1), calendar: calendar).pixels)
+        let b = boundingBox(ClockFrame.scene(at: date(hour: 12, minute: 9, second: 1), calendar: calendar).pixels)
+        XCTAssertNotEqual(a.minX, b.minX)
+        XCTAssertNotEqual(a.minY, b.minY)
+    }
+
     func testReportsLayout() {
         let reports = ClockFrame.reports(ClockFrame.pixels("12:34"))
         XCTAssertEqual(reports.count, 2)
