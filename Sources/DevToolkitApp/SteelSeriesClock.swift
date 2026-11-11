@@ -32,6 +32,19 @@ final class SteelSeriesClock: @unchecked Sendable {
     private var target = Date()
     private var wakeObserver: NSObjectProtocol?
 
+    // Now playing (queue-confined). While something is playing the display
+    // shows it; otherwise (paused, stopped, nothing reporting) it shows the clock.
+    private var nowPlayingEnabled = true
+    private var monitor: NowPlayingMonitor?
+    private var nowPlaying: NowPlayingTrack?
+    private var sceneStart = Date()
+    /// The last frame sent, so identical frames (marquee holds) are not re-sent.
+    private var lastPixels: [Bool]?
+    private var lastWrite = Date.distantPast
+    /// Frames are re-sent at least this often even if unchanged, in case the
+    /// device reverts to its own UI when left idle.
+    private static let heartbeat: TimeInterval = 5
+
     /// Starts watching for the base station. Idempotent. Safe from any thread.
     func start() {
         queue.sync { startOnQueue() }
@@ -41,6 +54,47 @@ final class SteelSeriesClock: @unchecked Sendable {
     /// Synchronous so it completes before the app exits. Idempotent.
     func stop() {
         queue.sync { stopOnQueue() }
+    }
+
+    /// Turns the now-playing screen on or off. Safe from any thread.
+    func setNowPlayingEnabled(_ enabled: Bool) {
+        queue.sync {
+            nowPlayingEnabled = enabled
+            updateMonitor()
+        }
+    }
+
+    // MARK: - Now playing (queue only)
+
+    private func updateMonitor() {
+        if running, nowPlayingEnabled {
+            guard monitor == nil else { return }
+            guard let adapter = NowPlayingMonitor.Adapter.bundled() else {
+                log.error("MediaRemote adapter is not bundled; now playing disabled")
+                return
+            }
+            let monitor = NowPlayingMonitor(adapter: adapter) { [weak self] track in
+                self?.queue.async { self?.nowPlayingChanged(track) }
+            }
+            self.monitor = monitor
+            monitor.start()
+        } else if let monitor {
+            self.monitor = nil
+            monitor.stop()
+            nowPlaying = nil
+            refreshAll()
+        }
+    }
+
+    private func nowPlayingChanged(_ track: NowPlayingTrack?) {
+        guard running, monitor != nil else { return }
+        let wasShowing = nowPlaying?.isPlaying == true
+        let isShowing = track?.isPlaying == true
+        if isShowing, !wasShowing || track?.identity != nowPlaying?.identity {
+            sceneStart = Date() // new track or resumed: marquee starts from the beginning
+        }
+        nowPlaying = track
+        refreshAll()
     }
 
     // MARK: - Lifecycle (queue only)
@@ -76,7 +130,7 @@ final class SteelSeriesClock: @unchecked Sendable {
         self.manager = manager
 
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
-        timer.setEventHandler { [weak self] in self?.refreshAll() }
+        timer.setEventHandler { [weak self] in self?.refreshAll(fromTimer: true) }
         timer.schedule(wallDeadline: .distantFuture, repeating: .never, leeway: .nanoseconds(0))
         timer.resume()
         self.timer = timer
@@ -84,12 +138,16 @@ final class SteelSeriesClock: @unchecked Sendable {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
         ) { [weak self] _ in
-            self?.queue.async { self?.refreshAll() }
+            self?.queue.async {
+                self?.lastPixels = nil
+                self?.refreshAll()
+            }
         }
 
         // All state must be ready before activation: the matching callback for
         // an already-connected device can run as soon as the manager is active.
         running = true
+        updateMonitor()
         IOHIDManagerActivate(manager)
         log.notice("Clock started; waiting for base station")
     }
@@ -97,6 +155,9 @@ final class SteelSeriesClock: @unchecked Sendable {
     private func stopOnQueue() {
         guard running else { return }
         running = false
+        updateMonitor() // stops the now-playing adapter
+        nowPlaying = nil
+        lastPixels = nil
 
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
@@ -159,6 +220,7 @@ final class SteelSeriesClock: @unchecked Sendable {
         }
         devices[id] = device
         log.notice("Base station connected")
+        lastPixels = nil
         refreshAll()
     }
 
@@ -172,14 +234,26 @@ final class SteelSeriesClock: @unchecked Sendable {
 
     // MARK: - Drawing and timing (queue only)
 
-    private func refreshAll() {
+    private func refreshAll(fromTimer: Bool = false) {
         guard running, !devices.isEmpty else { return }
 
-        // Render for the instant the timer was aimed at (never earlier than now),
-        // plus a tiny epsilon so floating point error can't land us 1ns before
-        // the boundary and draw the old minute.
-        let renderDate = max(Date(), target).addingTimeInterval(0.002)
-        let scene = ClockFrame.scene(at: renderDate)
+        // From the timer: render for the instant it was aimed at (never earlier
+        // than now), plus a tiny epsilon so floating point error can't land us
+        // 1ns before the boundary and draw the old minute. From any other
+        // trigger (a track change, wake) the pending deadline may be far in the
+        // future, so render for the present instead.
+        let renderDate = (fromTimer ? max(Date(), target) : Date()).addingTimeInterval(0.002)
+        let scene: ClockFrame.Scene
+        if let track = nowPlaying, track.isPlaying {
+            scene = NowPlayingFrame.scene(for: track, at: renderDate, sinceStart: renderDate.timeIntervalSince(sceneStart))
+        } else {
+            scene = ClockFrame.scene(at: renderDate)
+        }
+
+        if scene.pixels == lastPixels, Date().timeIntervalSince(lastWrite) < Self.heartbeat {
+            arm(at: renderDate.addingTimeInterval(scene.refreshAfter))
+            return
+        }
         let reports = ClockFrame.reports(scene.pixels)
 
         var failed = false
@@ -197,8 +271,11 @@ final class SteelSeriesClock: @unchecked Sendable {
         }
 
         if failed {
+            lastPixels = nil
             arm(at: Date().addingTimeInterval(2))
         } else {
+            lastPixels = scene.pixels
+            lastWrite = Date()
             log.debug("Displayed: \(scene.description, privacy: .public)")
             arm(at: renderDate.addingTimeInterval(scene.refreshAfter))
         }
@@ -223,6 +300,7 @@ private extension DispatchWallTime {
 @MainActor
 final class SteelSeriesClockFeature: ObservableObject {
     private static let defaultsKey = "steelSeriesClockEnabled"
+    private static let nowPlayingDefaultsKey = "steelSeriesNowPlayingEnabled"
 
     private let clock = SteelSeriesClock()
 
@@ -234,8 +312,19 @@ final class SteelSeriesClockFeature: ObservableObject {
         }
     }
 
+    /// Show what is playing instead of the clock while media is playing.
+    @Published var showsNowPlaying: Bool {
+        didSet {
+            guard showsNowPlaying != oldValue else { return }
+            UserDefaults.standard.set(showsNowPlaying, forKey: Self.nowPlayingDefaultsKey)
+            clock.setNowPlayingEnabled(showsNowPlaying)
+        }
+    }
+
     init() {
         isEnabled = UserDefaults.standard.bool(forKey: Self.defaultsKey)
+        showsNowPlaying = UserDefaults.standard.object(forKey: Self.nowPlayingDefaultsKey) as? Bool ?? true
+        clock.setNowPlayingEnabled(showsNowPlaying)
     }
 
     /// Call once the app has decided it is the canonical instance.

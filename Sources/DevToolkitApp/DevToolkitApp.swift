@@ -27,6 +27,8 @@ private struct SteelSeriesClockToggle: View {
 
     var body: some View {
         Toggle("SteelSeries Clock", isOn: $clock.isEnabled)
+        Toggle("Show Now Playing on SteelSeries", isOn: $clock.showsNowPlaying)
+            .disabled(!clock.isEnabled)
     }
 }
 

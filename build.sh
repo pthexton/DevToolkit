@@ -42,16 +42,33 @@ echo "==> swift build (release)"
 swift build -c release
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
+# MediaRemote adapter (Vendor/mediaremote-adapter): the helper framework and
+# Perl script the SteelSeries now-playing display uses. The framework is only
+# loaded by /usr/bin/perl at runtime (never linked), so it is bundled as data.
+if ! command -v cmake >/dev/null 2>&1; then
+    echo "error: cmake is required to build the MediaRemote adapter (brew install cmake)." >&2
+    exit 1
+fi
+echo "==> cmake build (MediaRemoteAdapter.framework)"
+ADAPTER_BUILD="$BUILD_DIR/mediaremote-adapter"
+cmake -S Vendor/mediaremote-adapter -B "$ADAPTER_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake --build "$ADAPTER_BUILD" --target MediaRemoteAdapter >/dev/null
+
 echo "==> Assembling $APP"
 rm -rf "$APP"
-mkdir -p "$MACOS" "$APP/Contents/Resources" "$APP/Contents/Library/LaunchAgents"
+mkdir -p "$MACOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$APP/Contents/Library/LaunchAgents"
 
 cp "$BIN_DIR/DevToolkitApp"      "$MACOS/DevToolkitApp"
+cp Vendor/mediaremote-adapter/bin/mediaremote-adapter.pl "$APP/Contents/Resources/mediaremote-adapter.pl"
+cp -R "$ADAPTER_BUILD/MediaRemoteAdapter.framework"      "$APP/Contents/Frameworks/MediaRemoteAdapter.framework"
 cp Packaging/Info.plist          "$APP/Contents/Info.plist"
 # Bundled LaunchAgent for SMAppService self-registration (sealed by signing).
 cp Packaging/LaunchAgent.plist   "$APP/Contents/Library/LaunchAgents/com.beyondtrust.devtoolkit.plist"
 
 echo "==> Codesigning (identity: $SIGN_IDENTITY)"
+# Nested code first, so the app's seal covers an already-signed framework.
+codesign --force --timestamp=none --sign "$SIGN_IDENTITY" \
+    "$APP/Contents/Frameworks/MediaRemoteAdapter.framework"
 codesign --force --options runtime --timestamp=none \
     --identifier "$APP_ID" \
     --entitlements Packaging/DevToolkit.entitlements \
