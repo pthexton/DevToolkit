@@ -16,6 +16,8 @@ struct DevToolkitApp: App {
                 .keyboardShortcut("k")
             SteelSeriesClockToggle(clock: delegate.clock)
             Divider()
+            LitraGlowMenu(light: delegate.litra)
+            Divider()
             Button("Quit DevToolkit") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
         }
@@ -32,10 +34,47 @@ private struct SteelSeriesClockToggle: View {
     }
 }
 
+private struct LitraGlowMenu: View {
+    @ObservedObject var light: LitraGlowFeature
+
+    var body: some View {
+        if light.state.isConnected {
+            Toggle("Litra Glow", isOn: Binding(
+                get: { light.state.isOn ?? false },
+                set: { light.setOn($0) }
+            ))
+            Picker(brightnessTitle, selection: Binding(
+                get: { nearestStep },
+                set: { light.setBrightness(percent: $0) }
+            )) {
+                ForEach(LitraGlowFeature.brightnessSteps, id: \.self) { step in
+                    Text("\(step)%").tag(step)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(light.state.isOn != true)
+        } else {
+            Text("Litra Glow not connected")
+        }
+    }
+
+    private var brightnessTitle: String {
+        light.brightnessPercent.map { "Litra Brightness (\($0)%)" } ?? "Litra Brightness"
+    }
+
+    /// The menu step closest to the light's actual brightness, which may have
+    /// been set to an in-between value by the light's buttons or another app.
+    private var nearestStep: Int {
+        guard let percent = light.brightnessPercent else { return -1 }
+        return LitraGlowFeature.brightnessSteps.min { abs($0 - percent) < abs($1 - percent) } ?? -1
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let overlay = OverlayController()
     let clock = SteelSeriesClockFeature()
+    let litra = LitraGlowFeature()
     private var hotKey: HotKeyManager?
     private var ghosttyQuickTerminalHotKey: HotKeyManager?
 
@@ -65,10 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         clock.startIfEnabled()
+        litra.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         clock.shutdown()
+        litra.shutdown()
     }
 
     /// Self-registers as a login-item LaunchAgent via `SMAppService` so
