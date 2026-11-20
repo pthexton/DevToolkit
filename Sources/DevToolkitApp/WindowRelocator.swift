@@ -7,7 +7,8 @@ struct RelocatableApp: Identifiable {
     let id: String // bundle id
     let name: String
     let icon: NSImage?
-    let pid: pid_t
+    /// Every running process sharing this bundle id (each `rockit run` is its own process).
+    let pids: [pid_t]
 }
 
 /// Pulls an app's windows onto the display under the mouse pointer using the
@@ -31,20 +32,25 @@ enum WindowRelocator {
         return false
     }
 
-    static func relocatableApps() -> [RelocatableApp] {
-        let selfBundleID = Bundle.main.bundleIdentifier
-        return NSWorkspace.shared.runningApplications.compactMap { app -> RelocatableApp? in
-            guard app.activationPolicy == .regular,
-                  let bundleID = app.bundleIdentifier, bundleID != selfBundleID,
-                  let url = app.bundleURL,
-                  isScriptable(infoDictionary: Bundle(url: url)?.infoDictionary) else { return nil }
-            return RelocatableApp(id: bundleID,
-                                  name: app.localizedName ?? bundleID,
-                                  icon: app.icon,
-                                  pid: app.processIdentifier)
-        }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+static func relocatableApps() -> [RelocatableApp] {
+    let selfBundleID = Bundle.main.bundleIdentifier
+    let candidates = NSWorkspace.shared.runningApplications.compactMap { app -> (id: String, name: String, icon: NSImage?, pid: pid_t)? in
+        guard app.activationPolicy == .regular,
+              let bundleID = app.bundleIdentifier, bundleID != selfBundleID,
+              let url = app.bundleURL,
+              isScriptable(infoDictionary: Bundle(url: url)?.infoDictionary) else { return nil }
+        return (bundleID, app.localizedName ?? bundleID, app.icon, app.processIdentifier)
     }
+    return grouped(candidates)
+}
+
+/// One entry per bundle id, carrying every pid, sorted by name.
+static func grouped(_ candidates: [(id: String, name: String, icon: NSImage?, pid: pid_t)]) -> [RelocatableApp] {
+    Dictionary(grouping: candidates, by: \.id).map { id, group in
+        RelocatableApp(id: id, name: group[0].name, icon: group[0].icon, pids: group.map(\.pid).sorted())
+    }
+    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+}
 
     /// The screen under the mouse pointer, falling back to the main screen.
     static func activeScreenRects() -> ScreenRects? {
@@ -55,42 +61,21 @@ enum WindowRelocator {
         return ScreenRects(primaryHeight: primary.frame.height, targetVisibleFrame: target.visibleFrame)
     }
 
-    /// One line per window: `left,top,right,bottom`. A malformed line becomes
-    /// nil so the array index still equals the window's position.
-    static func parseBoundsList(_ raw: String) -> [CGRect?] {
-        raw.split(separator: "\n", omittingEmptySubsequences: true).map { line in
-            let values = line.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-            return WindowGeometry.rect(fromAppleEventBounds: values.map { Int($0) })
-        }
-    }
-
-    /// Fire-and-forget. Reads every window's bounds first, then moves the
-    /// ones not already on the active display.
+    /// Fire-and-forget. For every process of the app, reads all window bounds
+    /// first, then moves the ones not already on the active display.
     static func relocate(_ app: RelocatableApp) {
         guard let screens = activeScreenRects() else { return }
         DispatchQueue.global(qos: .userInitiated).async {
-            let readScript = """
-            tell application id "\(app.id)"
-                set out to ""
-                repeat with w in windows
-                    set b to bounds of w
-                    set out to out & (item 1 of b as integer) & "," & (item 2 of b as integer) & "," & (item 3 of b as integer) & "," & (item 4 of b as integer) & linefeed
-                end repeat
-                return out
-            end tell
-            """
-            guard let raw = AppleScriptRunner.runAndReturnString(readScript) else {
-                log.error("Could not read window bounds for \(app.id, privacy: .public) (permission denied or no bounds support)")
-                return
-            }
-            for (offset, window) in parseBoundsList(raw).enumerated() {
-                guard let window, let target = WindowGeometry.targetBounds(for: window, in: screens) else { continue }
-                let b = WindowGeometry.appleEventBounds(target)
-                let moveScript = """
-                tell application id "\(app.id)" to set bounds of window \(offset + 1) to {\(b[0]), \(b[1]), \(b[2]), \(b[3])}
-                """
-                if AppleScriptRunner.runAndReturnString(moveScript) == nil {
-                    log.error("Could not move window \(offset + 1) of \(app.id, privacy: .public)")
+            for pid in app.pids {
+                guard let windows = AppleEventWindows.boundsOfEveryWindow(pid: pid) else {
+                    log.error("Could not read window bounds for \(app.id, privacy: .public) pid \(pid) (permission denied or no window support)")
+                    continue
+                }
+                for (offset, window) in windows.enumerated() {
+                    guard let window, let target = WindowGeometry.targetBounds(for: window, in: screens) else { continue }
+                    if !AppleEventWindows.setBounds(pid: pid, windowIndex: offset + 1, to: target) {
+                        log.error("Could not move window \(offset + 1) of \(app.id, privacy: .public) pid \(pid)")
+                    }
                 }
             }
         }
