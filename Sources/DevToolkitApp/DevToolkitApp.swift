@@ -16,6 +16,8 @@ struct DevToolkitApp: App {
                 .keyboardShortcut("k")
             SteelSeriesClockToggle(clock: delegate.clock)
             Divider()
+            RelocateMenu()
+            Divider()
             LitraGlowMenu(light: delegate.litra)
             Divider()
             Button("Quit DevToolkit") { NSApplication.shared.terminate(nil) }
@@ -31,6 +33,40 @@ private struct SteelSeriesClockToggle: View {
         Toggle("SteelSeries Clock", isOn: $clock.isEnabled)
         Toggle("Show Now Playing on SteelSeries", isOn: $clock.showsNowPlaying)
             .disabled(!clock.isEnabled)
+    }
+}
+
+/// "Relocate": pulls every window of the chosen app onto the display under
+/// the mouse pointer, for when a monitor has been switched to another input
+/// and its windows are stranded. Lists only apps that publish a scripting
+/// interface; the list is rebuilt each time the menu is shown.
+private struct RelocateMenu: View {
+    var body: some View {
+        let apps = WindowRelocator.relocatableApps()
+        Menu("Relocate") {
+            if apps.isEmpty {
+                Text("No scriptable apps running")
+            } else {
+                ForEach(apps) { app in
+                    Button {
+                        WindowRelocator.relocate(app)
+                    } label: {
+                        if let icon = app.icon {
+                            Image(nsImage: icon.resized(to: 16))
+                        }
+                        Text(app.name)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension NSImage {
+    func resized(to side: CGFloat) -> NSImage {
+        let copy = (self.copy() as? NSImage) ?? self
+        copy.size = NSSize(width: side, height: side)
+        return copy
     }
 }
 
